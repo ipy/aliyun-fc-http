@@ -3,7 +3,9 @@
 /* eslint-disable @typescript-eslint/ban-ts-ignore */
 
 import * as http from 'http'
+
 import { Readable, Transform } from 'stream'
+
 import { EventEmitter } from 'events'
 
 interface AliyunRequest extends EventEmitter{
@@ -35,47 +37,39 @@ function SetFromOutgoingHttpHeaders(respone : AliyunResponse, headers:http.Outgo
 
 class ResponseWrap extends http.ServerResponse{
     constructor(request:RequestWrap,respone : AliyunResponse){
+        //@ts-ignore
         super(request)
-        let stream:Transform 
         let sent = false
-        // let preEnd = false
         let sendIndex = 0
+        let buf: Buffer
+        this.on('prefinish', () => {
+            respone.send(buf || '');
+        })
         //@ts-ignore
         this._send = (data, encoding, callback)=>{
-            // console.log('_send')
-            // console.log(data, encoding)
-            // chunkedEncoding 模式下, 每4次_send ,第三次真实数据内容 , 第一次是数据长度,第二四次是分隔符
-            this.chunkedEncoding && ((sendIndex++)%4==2) && stream && stream.write(data, encoding, callback)
-            if(sent){
-                return
-            }
-            SetFromOutgoingHttpHeaders(respone,this.getHeaders())
-            respone.setStatusCode(this.statusCode)
-            if(!this.chunkedEncoding){
-                respone.send(data)
-            }else{
-                //https://stackoverflow.com/a/35564274
-                stream = new Transform()
-                stream._transform = function (chunk,encoding,done) 
-                {
-                    stream.push(chunk)
-                    done()
-                }
-                respone.send(stream)
+            if (!sent) {
+                SetFromOutgoingHttpHeaders(respone,this.getHeaders())
+                respone.setStatusCode(this.statusCode)
             }
             sent = true
-          }
+            if (!this.chunkedEncoding || ((sendIndex++)%4===2)) {
+                if (data && !Buffer.isBuffer(data)) data = Buffer.from(data, encoding)
+                if (data) buf = buf ? Buffer.concat([buf, data]) : data
+            }
+            sendIndex += 1;
+            callback?.();
+        }
         //@ts-ignore
         this.end = (chunk, encoding, callback)=>{
-            // preEnd = true
             super.end(chunk, encoding, callback)
             this.emit('prefinish');
-            stream && stream.end()
+            callback?.();
         }
-        // this.on('error',err=>console.error)
+        this.on('error',err=>console.error)
     }
 }
 
+//@ts-ignore
 class RequestWrap extends Readable implements http.IncomingMessage {
   url:string
   baseUrl:string
@@ -141,9 +135,10 @@ class AliyunServer extends http.Server{
             // console.log('handler(request, response, context)')
             const urlPrefix = '/proxy/'+(context as AliyunContext).service.name+'/'+(context as AliyunContext).function.name
             let url = (request as AliyunRequest).url
-            url = url.substring( url.indexOf(urlPrefix)+urlPrefix.length )
+            if (url.indexOf(urlPrefix) > -1) url = url.substring( url.indexOf(urlPrefix)+urlPrefix.length )
             const requestWrap = new RequestWrap(request as AliyunRequest,url||'/')
             const responseWrap = new ResponseWrap(requestWrap,response)
+            //@ts-ignore
             requestListener(requestWrap,responseWrap)
         }
     }
